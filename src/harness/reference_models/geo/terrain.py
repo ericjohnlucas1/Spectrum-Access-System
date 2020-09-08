@@ -30,6 +30,7 @@ import numpy as np
 import os
 import time
 import threading
+import gdal
 
 from reference_models.geo import tiles
 from reference_models.geo import vincenty
@@ -110,7 +111,7 @@ class TerrainDriver:
     """Updates the cache LRU."""
     self._tile_lru[key] = time.time()
 
-  def GetTile(self, ilat, ilon):
+  def GetTile(self, ilat, ilon, alternate_tiles=None):
     """Returns a given tile as a 2D array, or None if unmanaged tile.
 
     This routine manages the tile cache.
@@ -123,6 +124,17 @@ class TerrainDriver:
     Raises:
       IOError: if an expected tile cannot be read
     """
+    if alternate_tiles=="srtm":
+        hemisphere_equator = "s" if ilat<0 else "n"
+        lat_offset = 1 if ilat<0 else -1 
+        hemisphere_prime_meridian = 'w' if ilon<0 else 'e'
+        srtm_tile_filename = "%s%s_%s%s_1arc_v3.tif"%(hemisphere_equator,str(abs(int(ilat))+lat_offset).zfill(2),hemisphere_prime_meridian, str(abs(int(ilon))).zfill(3))
+        ds=gdal.Open(os.path.join("/srtm", srtm_tile_filename))
+        arys=[]
+        for i in xrange(1, ds.RasterCount+1):
+            arys.append(ds.GetRasterBand(i).ReadAsArray())
+        arys = np.concatenate(arys)
+        return arys
     key = (ilat, ilon)
 
     with self._lock:
@@ -163,7 +175,7 @@ class TerrainDriver:
 
       return self._tile_cache[key]
 
-  def GetTerrainElevation(self, lat, lon, do_interp=True):
+  def GetTerrainElevation(self, lat, lon, do_interp=True, alternate_tiles=None):
     """Retrieves the elevation for one or several points.
 
     This function is vectorized for efficiency.
@@ -221,7 +233,7 @@ class TerrainDriver:
     ilatlon = ilat + 1j*ilon
     unique_ilatlon = np.unique(ilatlon)
     for key in unique_ilatlon:
-      tile_cache = self.GetTile(key.real, key.imag)
+      tile_cache = self.GetTile(key.real, key.imag, alternate_tiles)
       if tile_cache is None:
         # Nothing to set, all values already at 0
         continue
@@ -253,7 +265,8 @@ class TerrainDriver:
                      target_res_meter=-1,
                      target_res_arcsec=1,
                      do_interp=True,
-                     max_points=-1):
+                     max_points=-1,
+                     alternate_tiles=None):
     """Returns the terrain profile between two points.
 
     The path is calculated using Vincenty method for obtaining the geodesic
@@ -296,7 +309,7 @@ class TerrainDriver:
     resolution = dist / float(num_points-1)
     lats, lons = vincenty.GeodesicSampling(lat1, lon1, lat2, lon2, num_points)
     elev = [num_points-1, resolution]
-    elev.extend(self.GetTerrainElevation(lats, lons, do_interp))
+    elev.extend(self.GetTerrainElevation(lats, lons, do_interp, alternate_tiles))
     return elev
 
   def ComputeNormalizedHaat(self, lat, lon):
